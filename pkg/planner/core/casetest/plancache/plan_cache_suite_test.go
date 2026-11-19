@@ -454,6 +454,20 @@ func TestPreparedPlanCacheBatchPointGetEqAndInFixControl(t *testing.T) {
 	tk.MustQuery("execute st_middle using @a3, @b2, @b3, @c2").Check(testkit.Rows("1 2 1"))
 	tk.MustQuery("select @@last_plan_from_cache").Check(testkit.Rows("0"))
 	tk.MustExec("deallocate prepare st_middle")
+
+	// The handle is _tidb_rowid when the table has no integer primary key.
+	tk.MustExec("drop table if exists t_in_batch_point_get_rowid")
+	tk.MustExec("create table t_in_batch_point_get_rowid (a int, b int)")
+	tk.MustExec("insert into t_in_batch_point_get_rowid values (10, 1), (20, 2), (30, 3)")
+	tk.MustQuery("select _tidb_rowid, a from t_in_batch_point_get_rowid order by a").Check(testkit.Rows("1 10", "2 20", "3 30"))
+	tk.MustExec("prepare st_rowid from 'select a, b, _tidb_rowid from t_in_batch_point_get_rowid where _tidb_rowid in (?, ?)'")
+	tk.MustExec("set @r1=1, @r2=2")
+	tk.MustQuery("execute st_rowid using @r1, @r2").Sort().Check(testkit.Rows("10 1 1", "20 2 2"))
+	checkBatchPointGetExplain()
+	tk.MustExec("set @r1=3, @r2=1")
+	tk.MustQuery("execute st_rowid using @r1, @r2").Sort().Check(testkit.Rows("10 1 1", "30 3 3"))
+	tk.MustQuery("select @@last_plan_from_cache").Check(testkit.Rows("1"))
+	tk.MustExec("deallocate prepare st_rowid")
 }
 
 func runPreparedPlanCacheGroupByParamProjection(t *testing.T, tk *testkit.TestKit) {
@@ -1250,6 +1264,29 @@ func runPreparedPlanCachePointGetSafety(t *testing.T, tk *testkit.TestKit) {
 	require.Contains(t, rows[1][0], "Point_Get")
 	tk.MustExec("execute st using @a, @b")
 	tk.MustQuery("select @@last_plan_from_cache").Check(testkit.Rows("1")) // can hit
+
+	// The handle of a table without an integer primary key is _tidb_rowid. ORDER BY keeps
+	// the query off the point get fast path, so the cached PointGet has to rebuild the
+	// handle from its access conditions.
+	rowIDTableName := "t_point_get_rowid"
+	tk.MustExec(fmt.Sprintf("drop table if exists %s", rowIDTableName))
+	tk.MustExec(fmt.Sprintf("create table %s (a int, b int)", rowIDTableName))
+	tk.MustExec(fmt.Sprintf("insert into %s values (10, 1), (20, 2), (30, 3)", rowIDTableName))
+	tk.MustQuery(fmt.Sprintf("select _tidb_rowid, a from %s order by a", rowIDTableName)).Check(testkit.Rows("1 10", "2 20", "3 30"))
+	tk.MustExec(fmt.Sprintf("prepare st from 'select a from %s where _tidb_rowid=? order by a'", rowIDTableName))
+	tk.MustExec("set @a=1")
+	tk.MustQuery("execute st using @a").Check(testkit.Rows("10"))
+	tkProcess = tk.Session().ShowProcess()
+	ps = []*sessmgr.ProcessInfo{tkProcess}
+	tk.Session().SetSessionManager(&testkit.MockSessionManager{PS: ps})
+	rows = tk.MustQuery(fmt.Sprintf("explain for connection %d", tkProcess.ID)).Rows()
+	require.Contains(t, rows[len(rows)-1][0], "Point_Get")
+	tk.MustExec("set @a=3")
+	tk.MustQuery("execute st using @a").Check(testkit.Rows("30"))
+	tk.MustQuery("select @@last_plan_from_cache").Check(testkit.Rows("1"))
+	tk.MustExec("set @a=4")
+	tk.MustQuery("execute st using @a").Check(testkit.Rows())
+	tk.MustQuery("select @@last_plan_from_cache").Check(testkit.Rows("1"))
 	tk.MustExec("deallocate prepare st")
 }
 

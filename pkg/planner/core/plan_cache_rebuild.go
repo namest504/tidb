@@ -282,6 +282,10 @@ func buildRangesForPointGet(sctx base.PlanContext, x *physicalop.PointGetPlan) (
 				if !x.TblInfo.IsCommonHandle {
 					unsignedIntHandle = true
 				}
+			} else {
+				// Without an integer primary key the handle is _tidb_rowid, the column
+				// deriveTablePathStats builds the access conditions on.
+				pkCol = x.Schema().GetExtraHandleColumn()
 			}
 			if pkCol != nil {
 				ranges, accessConds, remainingConds, err := ranger.BuildTableRange(x.AccessConditions, x.SCtx().GetRangerCtx(), pkCol.RetType, 0)
@@ -350,6 +354,10 @@ func buildRangesForBatchGet(sctx base.PlanContext, x *physicalop.BatchPointGetPl
 				if !x.TblInfo.IsCommonHandle {
 					unsignedIntHandle = true
 				}
+			} else {
+				// Without an integer primary key the handle is _tidb_rowid, the column
+				// deriveTablePathStats builds the access conditions on.
+				pkCol = x.Schema().GetExtraHandleColumn()
 			}
 			if pkCol != nil {
 				ranges, accessConds, remainingConds, err := ranger.BuildTableRange(x.AccessConditions, x.GetCtx().GetRangerCtx(), pkCol.RetType, 0)
